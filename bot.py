@@ -291,30 +291,32 @@ async def handle_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE
         await start(update, context)
 
 # ==============================================================================
-# 4. APPLICATION STARTUP & RENDER KEEP-ALIVE TRICK (Native Async)
+# 4. APPLICATION STARTUP & RENDER KEEP-ALIVE TRICK (Industry Standard Async Lifecycle)
 # ==============================================================================
+import signal
+from aiohttp import web
+
 async def keep_alive_handler(request):
     """A simple endpoint to keep Render awake."""
-    return aiohttp.web.Response(text="Transfer Swahili AI Bot is alive and running! 🚀")
+    return web.Response(text="Transfer Swahili AI Bot is alive and running! 🚀")
 
 async def start_web_server():
     """Starts a simple web server integrated into the bot's async event loop."""
-    web_app = aiohttp.web.Application()
-    web_app.add_routes([aiohttp.web.get('/', keep_alive_handler)])
-    runner = aiohttp.web.AppRunner(web_app)
+    web_app = web.Application()
+    web_app.add_routes([web.get('/', keep_alive_handler)])
+    runner = web.AppRunner(web_app)
     await runner.setup()
     
-    # Render provides a PORT environment variable. We bind to it.
     port = int(os.environ.get("PORT", 8080))
-    site = aiohttp.web.TCPSite(runner, '0.0.0.0', port)
+    site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     print(f"🌐 Keep-alive web server running on port {port}")
 
 async def main():
-    # 1. Start the web server in the background (native async, no threading clashes!)
-    asyncio.create_task(start_web_server())
+    # 1. Start the web server first
+    await start_web_server()
     
-    # 2. Start the Telegram Bot
+    # 2. Build the Telegram Bot
     logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -324,8 +326,33 @@ async def main():
     app.add_handler(MessageHandler(filters.Text("🚀 Anza / Start"), handle_custom_start))
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY, handle_edit_reply))
     
+    # 3. Manually start the bot using async lifecycle methods (Fixes the Updater bug!)
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+    
     print("🚀 FINAL PRODUCTION BOT IS RUNNING! (Keep-alive active)")
-    await app.run_polling(drop_pending_updates=True)
+    
+    # 4. Keep the script running forever and handle graceful shutdown
+    stop_event = asyncio.Event()
+    
+    def shutdown_signal_handler():
+        print("\nReceived stop signal. Shutting down gracefully...")
+        stop_event.set()
+        
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, shutdown_signal_handler)
+        
+    await stop_event.wait()
+    
+    # Graceful shutdown
+    await app.updater.stop()
+    await app.stop()
+    await app.shutdown()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("\nBot stopped successfully.")
