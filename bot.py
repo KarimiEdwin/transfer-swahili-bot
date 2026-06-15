@@ -2,10 +2,10 @@ import os
 import logging
 import json
 import re
+import asyncio
 import feedparser
-import threading
+import aiohttp
 from groq import Groq
-from flask import Flask
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
@@ -21,7 +21,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # Initialize Groq Client
 client = Groq(api_key=GROQ_API_KEY)
 
-# RSS Sources (Easy to add more sources here in the future)
+# RSS Sources
 RSS_SOURCES = [
     "http://feeds.bbci.co.uk/sport/football/rss.xml",
     "https://www.skysports.com/rss/12040", 
@@ -291,21 +291,28 @@ async def handle_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE
         await start(update, context)
 
 # ==============================================================================
-# 4. APPLICATION STARTUP & RENDER KEEP-ALIVE TRICK
+# 4. APPLICATION STARTUP & RENDER KEEP-ALIVE TRICK (Native Async)
 # ==============================================================================
-keep_alive_app = Flask(__name__)
+async def keep_alive_handler(request):
+    """A simple endpoint to keep Render awake."""
+    return aiohttp.web.Response(text="Transfer Swahili AI Bot is alive and running! 🚀")
 
-@keep_alive_app.route('/')
-def home():
-    return "Transfer Swahili AI Bot is alive and running! 🚀"
-
-def run_keep_alive():
+async def start_web_server():
+    """Starts a simple web server integrated into the bot's async event loop."""
+    web_app = aiohttp.web.Application()
+    web_app.add_routes([aiohttp.web.get('/', keep_alive_handler)])
+    runner = aiohttp.web.AppRunner(web_app)
+    await runner.setup()
+    
+    # Render provides a PORT environment variable. We bind to it.
     port = int(os.environ.get("PORT", 8080))
-    keep_alive_app.run(host='0.0.0.0', port=port)
+    site = aiohttp.web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"🌐 Keep-alive web server running on port {port}")
 
-if __name__ == '__main__':
-    # 1. Start the dummy website in a background thread to keep Render happy
-    threading.Thread(target=run_keep_alive, daemon=True).start()
+async def main():
+    # 1. Start the web server in the background (native async, no threading clashes!)
+    asyncio.create_task(start_web_server())
     
     # 2. Start the Telegram Bot
     logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -318,4 +325,7 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY, handle_edit_reply))
     
     print("🚀 FINAL PRODUCTION BOT IS RUNNING! (Keep-alive active)")
-    app.run_polling()
+    await app.run_polling(drop_pending_updates=True)
+
+if __name__ == '__main__':
+    asyncio.run(main())
