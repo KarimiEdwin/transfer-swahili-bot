@@ -3,13 +3,15 @@ import logging
 import json
 import re
 import feedparser
+import threading
 from groq import Groq
+from flask import Flask
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 # ==============================================================================
-# 1. CONFIGURATION & SECRETS (Scalable: Change these to scale the bot)
+# 1. CONFIGURATION & SECRETS
 # ==============================================================================
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -33,7 +35,7 @@ LEARNING_FILE = "editor_learning.json"
 DEFAULT_IMAGE = "https://images.unsplash.com/photo-1579952363873-27f3bade9f55?w=800&q=80"
 
 # ==============================================================================
-# 2. MODULAR HELPER FUNCTIONS (Scalable & Robust)
+# 2. MODULAR HELPER FUNCTIONS
 # ==============================================================================
 def normalize_text(text: str) -> str:
     """Removes punctuation and lowercases text for accurate duplicate checking."""
@@ -60,10 +62,8 @@ def is_duplicate(title: str, link: str) -> bool:
     norm_title = normalize_text(title)
     
     for item in history:
-        # Layer 1: Exact Link Match (Most Reliable)
         if link and item.get("link") == link:
             return True
-        # Layer 2: Normalized Title Match (Catches slight wording variations)
         if normalize_text(item.get("title", "")) == norm_title:
             return True
     return False
@@ -71,12 +71,10 @@ def is_duplicate(title: str, link: str) -> bool:
 def save_to_history(title: str, link: str):
     """Saves article to history, keeping only the last 200 to prevent file bloat."""
     history = load_json_file(HISTORY_FILE, [])
-    
-    # Only add if not already there (double-check)
     if not is_duplicate(title, link):
         history.append({"title": title, "link": link})
         if len(history) > 200:
-            history = history[-200:] # Keep it lightweight and fast
+            history = history[-200:]
         save_json_file(HISTORY_FILE, history)
         print(f"✅ History Updated: {title[:50]}...")
 
@@ -86,7 +84,7 @@ def load_learning_history():
 def save_learning_example(original_text: str, ai_draft: str, editor_final: str):
     """Saves editor corrections to teach the AI the preferred style."""
     if normalize_text(ai_draft) == normalize_text(editor_final):
-        return # No meaningful changes made
+        return 
     
     learning_data = load_learning_history()
     learning_data.append({
@@ -95,7 +93,6 @@ def save_learning_example(original_text: str, ai_draft: str, editor_final: str):
         "editor_final": editor_final
     })
     
-    # Keep only the last 5 examples to keep the AI prompt concise and fast
     if len(learning_data) > 5:
         learning_data = learning_data[-5:]
         
@@ -131,12 +128,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             image_url = DEFAULT_IMAGE
             source_name = "Unknown"
             
-            # 🌟 ROBUST MULTI-SOURCE FETCHING WITH DEDUPLICATION
             for rss_url in RSS_SOURCES:
                 feed = feedparser.parse(rss_url)
                 source_name = feed.feed.get('title', 'Football News')
                 
-                # Check top 5 articles per source to find a fresh one
                 for article in feed.entries[:5]:
                     title = article.title
                     link = article.get('link', '')
@@ -146,31 +141,27 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         article_link = link
                         english_summary = article.get('summary', article.get('description', ''))
                         
-                        # Extract Image
                         if hasattr(article, 'media_content') and len(article.media_content) > 0:
                             image_url = article.media_content[0]['url']
                         elif hasattr(article, 'media_thumbnail') and len(article.media_thumbnail) > 0:
                             image_url = article.media_thumbnail[0]['url']
                         elif hasattr(article, 'enclosures') and len(article.enclosures) > 0:
                             image_url = article.enclosures[0]['href']
-                        break # Found a fresh article, stop checking this source
+                        break 
                 
                 if english_title != "No new news available right now.":
-                    break # Found a fresh article overall, stop checking other sources
+                    break 
             
         except Exception as e:
             english_title = "Error fetching news"
             print(f"❌ RSS Fetch Error: {e}")
         
-        # Handle case where all recent news is already in history
         if english_title in ["No new news available right now.", "Error fetching news"]:
             await query.edit_message_text(text="📰 *Hakuna habari mpya za sasa!* Bot itarudi tena baada ya habari mpya kutoka. ✅", parse_mode='Markdown')
             return
 
-        # Save to history IMMEDIATELY so we don't fetch it again if the user clicks twice
         save_to_history(english_title, article_link)
 
-        # 🌟 DYNAMIC LEARNING PROMPT INJECTION
         learning_examples = load_learning_history()
         examples_text = ""
         if learning_examples:
@@ -178,7 +169,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for i, ex in enumerate(learning_examples[-3:], 1):
                 examples_text += f"Example {i}:\n- AI Draft: {ex['ai_draft']}\n- Editor Final: {ex['editor_final']}\n"
 
-        # Choose prompt based on category
         if query.data == 'news':
             full_context = f"HEADLINE: {english_title}\nSUMMARY: {english_summary}"
             system_prompt = (
@@ -193,13 +183,13 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{examples_text}\n\nHABARI: \n{full_context}\n\n"
                 "SASA ANDIKA TWEET HII (Toa Kiswahili pekee, hakuna maelezo ya ziada kama 'Hii ni tweet'):"
             )
-        else: # Rumors
+        else: 
             full_context = f"HEADLINE: {english_title}\nSUMMARY: {english_summary}"
             system_prompt = (
                 "Wewe ni mfalme wa uvumi wa soka kwenye X (Twitter). Unajulikana kwa 'breaking news' zako za kwanza na mtindo wa kuvutia. "
                 "Kazi yako ni kuandika 'Tweet' ya uvumi inayochangamsha mashabiki wa Afrika Mashariki.\n\n"
                 "SHERIA KUU ZA X (TWITTER):\n"
-                "1. UREFU: Lazima uze herufi280. Weka sentensi fupi, 1-2 tu.\n"
+                "1. UREFU: Lazima uze herufi 280. Weka sentensi fupi, 1-2 tu.\n"
                 "2. HOOK: Anza na emoji na neno la kuvutia (mfano: '🗣️ EXCLUSIVE!', '💣 KIVUMBI!').\n"
                 "3. HASHTAGS: Weka hashtags 2-3 (mfano: #Uvumi, #TransferDeadline, #Chelsea).\n"
                 "4. JOURNALISTS: Ikiwa habari inataja Fabrizio Romano au David Ornstein, hakikisha unawataja na kuweka hashtag yao.\n"
@@ -208,7 +198,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "SASA ANDIKA TWEET HII (Toa Kiswahili pekee, hakuna maelezo ya ziada):"
             )
 
-        # Generate AI Response
         try:
             chat_completion = client.chat.completions.create(
                 messages=[
@@ -222,7 +211,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             swahili_text = f"❌ AI Error: {str(e)}"
             print(f"❌ Groq API Error: {e}")
 
-        # Store in context for editing and approval
         context.user_data['latest_english'] = english_title
         context.user_data['original_ai_swahili'] = swahili_text
         context.user_data['latest_swahili'] = swahili_text
@@ -256,7 +244,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         category = context.user_data.get('latest_category', 'news')
         source_name = context.user_data.get('latest_source', 'Football News')
         
-        # 🌟 Teach the bot from your edits before posting!
         save_learning_example(english_title, original_ai_swahili, final_swahili)
         
         header = f"📰 *HABARI KUTOKA {source_name.upper()}*" if category == 'news' else "🗣️ *UVUMI WA USAJILI*"
@@ -277,14 +264,13 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text="ℹ️ Bot hii inaundwa na wewe! Hii ni AI ya habari za usajili inayotafsiri na kuandaa tweets za Kiswahili kwa mashabiki wa soka.")
 
 async def handle_edit_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bulletproof handler for user replies to edit the draft."""
     if update.message.reply_to_message:
         replied_msg_id = update.message.reply_to_message.message_id
         expected_draft_id = context.user_data.get('draft_message_id')
         
         if replied_msg_id == expected_draft_id:
             new_swahili_text = update.message.text
-            context.user_data['latest_swahili'] = new_swahili_text # Update the final version
+            context.user_data['latest_swahili'] = new_swahili_text
             english_title = context.user_data.get('latest_english', '')
             
             new_caption = (
@@ -305,9 +291,23 @@ async def handle_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE
         await start(update, context)
 
 # ==============================================================================
-# 4. APPLICATION STARTUP
+# 4. APPLICATION STARTUP & RENDER KEEP-ALIVE TRICK
 # ==============================================================================
+keep_alive_app = Flask(__name__)
+
+@keep_alive_app.route('/')
+def home():
+    return "Transfer Swahili AI Bot is alive and running! 🚀"
+
+def run_keep_alive():
+    port = int(os.environ.get("PORT", 8080))
+    keep_alive_app.run(host='0.0.0.0', port=port)
+
 if __name__ == '__main__':
+    # 1. Start the dummy website in a background thread to keep Render happy
+    threading.Thread(target=run_keep_alive, daemon=True).start()
+    
+    # 2. Start the Telegram Bot
     logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -317,5 +317,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.Text("🚀 Anza / Start"), handle_custom_start))
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY, handle_edit_reply))
     
-    print("🚀 FINAL PRODUCTION BOT IS RUNNING! Press Ctrl+C to stop.")
+    print("🚀 FINAL PRODUCTION BOT IS RUNNING! (Keep-alive active)")
     app.run_polling()
