@@ -341,8 +341,15 @@ async def main():
         stop_event.set()
         
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, shutdown_signal_handler)
+    if os.name != 'nt':
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, shutdown_signal_handler)
+    else:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, shutdown_signal_handler)
+            except NotImplementedError:
+                pass
         
     await stop_event.wait()
     
